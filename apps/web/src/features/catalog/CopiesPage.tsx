@@ -1,13 +1,113 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Table,Input,Button,Tag,Modal,Form,Select } from 'antd';
-import { api,query } from '../../shared/api';
+import { Table, Input, Button, Tag, Modal, Form, Select } from 'antd';
+import { api, query } from '../../shared/api';
 import { useAction } from '../../shared/useAction';
-import { PageTitle,Status,Mono } from '../../shared/ui';
-import type { Copy,Page } from '../../shared/types';
-const states={available:['可借','green'],borrowed:['已借出','blue'],unavailable:['不可借','orange'],retired:['已注销','default']} as const;
+import { PageTitle, Status, Mono } from '../../shared/ui';
+import type { Copy, Page } from '../../shared/types';
+const states = {
+  available: ['可借', 'green'],
+  borrowed: ['已借出', 'blue'],
+  unavailable: ['不可借', 'orange'],
+  retired: ['已注销', 'default'],
+} as const;
 export default function CopiesPage() {
-  const [filter,setFilter]=useState({q:'',page:1,pageSize:20});const [editing,setEditing]=useState<Copy|null>(null);const [form]=Form.useForm();const {run,busy}=useAction();
-  const data=useQuery({queryKey:['copies',filter],queryFn:({signal})=>api<Page<Copy>>('/copies'+query(filter),{signal})});
-  return <><PageTitle title="馆藏副本" description="每一册实物拥有独立编号。添加副本请进入图书目录。"/><div className="panel"><div className="toolbar"><Input.Search placeholder="搜索馆藏编号或书名" onSearch={q=>setFilter({...filter,q,page:1})} allowClear/></div><Status error={data.error} pending={false}/><Table<Copy> rowKey="id" dataSource={data.data?.items} loading={data.isPending} scroll={{x:900}} pagination={{current:filter.page,pageSize:filter.pageSize,total:data.data?.total,showSizeChanger:true,pageSizeOptions:[20,50],onChange:(page,pageSize)=>setFilter({...filter,page,pageSize})}} columns={[{title:'馆藏编号',dataIndex:'code',render:v=><Mono>{v}</Mono>},{title:'书名',dataIndex:'title'},{title:'位置',dataIndex:'location',render:v=>v||'—'},{title:'状态',dataIndex:'status',render:(v:Copy['status'])=><Tag color={states[v][1]}>{states[v][0]}</Tag>},{title:'原因 / 备注',render:(_,c)=>c.statusReason||c.note||'—'},{title:'操作',render:(_,c)=><Button type="link" disabled={c.status==='borrowed'||c.status==='retired'} onClick={()=>{form.setFieldsValue({...c,reason:c.statusReason});setEditing(c)}}>维护状态</Button>}]}/></div><Modal title={`维护副本 · ${editing?.code}`} open={!!editing} onCancel={()=>setEditing(null)} confirmLoading={busy} onOk={()=>form.submit()}><p className="muted">注销后无法恢复流通，借阅历史将保留。已借出副本需通过归还流程处理。</p><Form form={form} layout="vertical" onFinish={values=>run(`/copies/${editing!.id}`,values,'PATCH',()=>setEditing(null))}><Form.Item name="status" label="状态" rules={[{required:true}]}><Select options={[{value:'available',label:'可借'},{value:'unavailable',label:'不可借'},{value:'retired',label:'注销（不可恢复）'}]}/></Form.Item><Form.Item name="reason" label="不可借 / 注销原因"><Input.TextArea maxLength={500}/></Form.Item><Form.Item name="location" label="位置"><Input maxLength={100}/></Form.Item><Form.Item name="note" label="备注"><Input.TextArea maxLength={500}/></Form.Item></Form></Modal></>
+  const [filter, setFilter] = useState({ q: '', page: 1, pageSize: 20 });
+  const [editing, setEditing] = useState<Copy | null>(null);
+  const [form] = Form.useForm();
+  const { run, busy } = useAction();
+  const data = useQuery({
+    queryKey: ['copies', filter],
+    queryFn: ({ signal }) => api<Page<Copy>>('/copies' + query(filter), { signal }),
+  });
+  return (
+    <>
+      <PageTitle title="馆藏副本" description="每一册实物拥有独立编号。添加副本请进入图书目录。" />
+      <div className="panel">
+        <div className="toolbar">
+          <Input.Search
+            placeholder="搜索馆藏编号或书名"
+            onSearch={(q) => setFilter({ ...filter, q, page: 1 })}
+            allowClear
+          />
+        </div>
+        <Status error={data.error} pending={false} />
+        <Table<Copy>
+          rowKey="id"
+          dataSource={data.data?.items}
+          loading={data.isPending}
+          scroll={{ x: 900 }}
+          pagination={{
+            current: filter.page,
+            pageSize: filter.pageSize,
+            total: data.data?.total,
+            showSizeChanger: true,
+            pageSizeOptions: [20, 50],
+            onChange: (page, pageSize) => setFilter({ ...filter, page, pageSize }),
+          }}
+          columns={[
+            { title: '馆藏编号', dataIndex: 'code', render: (v) => <Mono>{v}</Mono> },
+            { title: '书名', dataIndex: 'title' },
+            { title: '位置', dataIndex: 'location', render: (v) => v || '—' },
+            {
+              title: '状态',
+              dataIndex: 'status',
+              render: (v: Copy['status']) => <Tag color={states[v][1]}>{states[v][0]}</Tag>,
+            },
+            { title: '原因 / 备注', render: (_, c) => c.statusReason || c.note || '—' },
+            {
+              title: '操作',
+              render: (_, c) => (
+                <Button
+                  type="link"
+                  disabled={c.status === 'borrowed' || c.status === 'retired'}
+                  onClick={() => {
+                    form.setFieldsValue({ ...c, reason: c.statusReason });
+                    setEditing(c);
+                  }}
+                >
+                  维护状态
+                </Button>
+              ),
+            },
+          ]}
+        />
+      </div>
+      <Modal
+        title={`维护副本 · ${editing?.code}`}
+        open={!!editing}
+        onCancel={() => setEditing(null)}
+        confirmLoading={busy}
+        onOk={() => form.submit()}
+      >
+        <p className="muted">注销后无法恢复流通，借阅历史将保留。已借出副本需通过归还流程处理。</p>
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(values) =>
+            run(`/copies/${editing!.id}`, values, 'PATCH', () => setEditing(null))
+          }
+        >
+          <Form.Item name="status" label="状态" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'available', label: '可借' },
+                { value: 'unavailable', label: '不可借' },
+                { value: 'retired', label: '注销（不可恢复）' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="reason" label="不可借 / 注销原因">
+            <Input.TextArea maxLength={500} />
+          </Form.Item>
+          <Form.Item name="location" label="位置">
+            <Input maxLength={100} />
+          </Form.Item>
+          <Form.Item name="note" label="备注">
+            <Input.TextArea maxLength={500} />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </>
+  );
 }

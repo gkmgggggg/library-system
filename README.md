@@ -84,11 +84,22 @@ bash scripts/reset-admin.sh
 ## 验证
 
 ```bash
+npm run lint
+npm run format:check
 npm run typecheck
 npm test
 npm run build
 npm audit
 ```
+
+前端 ESLint 与 Prettier 配置位于 `apps/web`。ESLint 使用 flat config，启用 JavaScript、TypeScript 和 React Hooks 推荐规则；`eslint-config-prettier` 关闭冲突的格式规则，格式化由 Prettier 单独处理。
+
+```bash
+npm run lint:fix # 自动修复可修复的 lint 问题
+npm run format   # 格式化 apps/web 内的源码和配置
+```
+
+以上 lint/format 命令仅作用于前端 workspace，也可在 `apps/web` 内直接执行。Prettier 采用 2 空格缩进、单引号、分号、尾随逗号、100 列换行和 LF；构建产物、依赖、覆盖率及环境配置文件会被忽略。现有代码首次采用这套格式时可运行 `npm run format`，再执行 `npm run format:check` 验证。
 
 `npm test` 自动创建临时、随机端口的 PostgreSQL 测试实例，运行结束销毁测试数据。不会清空开发库。不要把测试配置指向真实业务库，测试类还会检查数据库名。
 
@@ -130,4 +141,4 @@ bash scripts/restore-test.sh /绝对路径/备份文件.dump
 
 ## 后续功能
 
-批量导入导出、操作更正、可配置借阅政策、封面上传、预约、通知、遗失赔偿和多分馆属于需求中的 P1/P2。当前不提供这些能力。Java 代码格式、前端 lint 自动化可作为后续开发工具补充；现已提供编译、类型检查和业务测试。
+批量导入导出、操作更正、可配置借阅政策、封面上传、预约、通知、遗失赔偿和多分馆属于需求中的 P1/P2。当前不提供这些能力。Java 代码格式可作为后续开发工具补充；现已提供前端 lint、格式检查、编译、类型检查和业务测试。
