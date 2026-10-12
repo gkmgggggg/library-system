@@ -27,8 +27,10 @@ services:
       DATABASE_USER: library_app
       APP_ORIGIN: ${APP_ORIGIN:?Set HTTPS application origin}
       API_PORT: 3001
+      LIBRARY_COVER_DIR: /app/covers
     ports: ["127.0.0.1:${LIBRARY_API_PORT:-3001}:3001"]
     secrets: [app_db_password]
+    volumes: [library_covers:/app/covers]
     networks: [database]
     depends_on:
       postgres:
@@ -44,6 +46,7 @@ networks:
     internal: true
 volumes:
   library_db:
+  library_covers:
 secrets:
   owner_db_password:
     file: ${LIBRARY_OWNER_PASSWORD_FILE:?Set private owner password file outside checkout}

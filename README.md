@@ -13,7 +13,7 @@ cd /Users/yj/Desktop/project/library-system
 npm ci
 npm run db:start
 npm run build
-npm run db:seed
+npm run db:seed # 可选；已整理的数据库跳过演示书目初始化
 npm run admin:create
 npm run dev
 ```
@@ -55,6 +55,12 @@ docs/                   需求、Java 架构、数据库与验证说明
 ```
 
 后端采用 Controller → Service → SQL Repository，直接使用参数化 SQL。借、还、续借使用 `@Transactional`；初始化和改密使用 TransactionTemplate。使用 Spring 的 JDBC 事务绑定连接，不在事务中手工另开连接。
+
+公开网络小说样本支持 `npm run catalog:crawl` 与 `npm run catalog:import`。默认采集约 1000 本番茄公开书目，保存来源、去重且不创建实体副本；简介使用题材及状态概览，不下载正文。详细步骤、批次检查及回退见[导入说明](docs/番茄小说书目导入.md)。
+
+按本次学习练习要求，`npm run catalog:prepare` 删除无借阅历史的四本初始虚构演示书及副本，并为每本没有副本的番茄书目添加一册带说明的模拟副本。该命令会删除符合条件的演示数据，运行前先备份；有借阅历史时拒绝删除。`catalog:covers` 下载公开封面，`catalog:covers:import` 校验并关联本地图片。封面默认保存在 `~/Library/Application Support/library-system/covers`，可用 `LIBRARY_COVER_DIR` 修改。已整理的数据库不要再运行 `db:seed`，它会重新生成演示书目。
+
+`npm run catalog:copies:distribute` 把初始一册样本补充为多数 1～3 册、少量 4～6 册的模拟馆藏，并安排分类书架与少量检修样本。它保留借阅历史、手工修改和已注销副本，重复运行不继续增量。操作前先备份，分布规则和回退方式见导入说明。
 
 ## 账号与业务流程
 

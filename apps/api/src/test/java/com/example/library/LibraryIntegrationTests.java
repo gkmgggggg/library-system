@@ -19,12 +19,20 @@ import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT,properties={
  "spring.datasource.url=${TEST_DATABASE_URL:jdbc:postgresql://127.0.0.1:1/library_test}",
  "spring.datasource.username=${TEST_DATABASE_USER:library_test}","spring.datasource.password=${TEST_DATABASE_PASSWORD:}"})
 class LibraryIntegrationTests {
+ static final java.nio.file.Path COVER_DIR=createCoverDirectory();
+ static java.nio.file.Path createCoverDirectory() { try{return java.nio.file.Files.createTempDirectory("library-test-covers-");}catch(Exception e){throw new RuntimeException(e);} }
+ @DynamicPropertySource static void coverDirectory(DynamicPropertyRegistry registry) { registry.add("library.cover-dir",()->COVER_DIR.toString()); }
+ @AfterAll static void removeCoverDirectory() throws Exception { try(var files=java.nio.file.Files.walk(COVER_DIR)){for(var file:files.sorted(Comparator.reverseOrder()).toList())java.nio.file.Files.delete(file);} }
  @Autowired Sql sql;@Autowired CirculationService circulation;@Autowired CatalogService catalog;@Autowired ReaderService readers;
+ @Autowired CatalogImportService catalogImports;
+ @Autowired CatalogMaintenanceService maintenance;@Autowired BookCoverService coverService;
  @Autowired PasswordEncoder passwords;@Autowired TransactionTemplate tx;@Autowired Environment environment;@Autowired ObjectMapper json;
  UUID adminId,readerId,readerUser,otherId,otherUser,bookId,categoryId;List<UUID> copies;String password;
  @BeforeEach void fixture() {
@@ -47,6 +55,144 @@ class LibraryIntegrationTests {
  static void auth(CurrentUser user) { SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(user,null,List.of())); }
  Map<String,Object> borrow(UUID reader,UUID copy) { return circulation.borrow(UUID.randomUUID(),new CirculationController.Borrow(reader,copy,"")); }
  long count(String query) { return sql.count(query,Map.of()); }
+ UUID demoBook() {
+  return id(sql.one("INSERT INTO books(category_id,title,author,description) VALUES(:category,'数据库入门练习','学习项目编写组','仅用于本地学习的虚构书目') RETURNING id",Sql.params("category",categoryId)));
+ }
+ @Test void samplePreparationDeletesOnlyUnusedDemoAndAddsOneCopyIdempotently() {
+  UUID demo=demoBook();sql.update("INSERT INTO book_copies(book_id) SELECT :id FROM generate_series(1,3)",Sql.params("id",demo));
+  catalogImports.importDocument(new CatalogImportService.Document("fanqie",List.of(importedBook("7000000000000000020","来源小说","网络小说"))));
+  var result=maintenance.prepareFanqieSamples();assertEquals(1,result.deletedBooks());assertEquals(3,result.deletedCopies());assertEquals(1,result.addedCopies());
+  assertEquals(2,count("SELECT count(*) FROM books"));assertEquals(9,count("SELECT count(*) FROM book_copies"));assertEquals(3,count("SELECT count(*) FROM users"));
+  var again=maintenance.prepareFanqieSamples();assertEquals(0,again.deletedBooks());assertEquals(0,again.addedCopies());assertEquals(1,again.skippedBooks());
+  assertEquals(1,count("SELECT count(*) FROM book_copies WHERE note LIKE '学习用模拟副本%'") );
+ }
+ @Test void sampleCleanupRefusesEvenReturnedLoanHistoryAndRollsBack() {
+  UUID demo=demoBook();UUID copy=id(sql.one("INSERT INTO book_copies(book_id) VALUES(:id) RETURNING id",Sql.params("id",demo)));
+  UUID loan=id(borrow(readerId,copy));circulation.giveBack(UUID.randomUUID(),loan,new CirculationController.Return(false,""));
+  assertThrows(IllegalStateException.class,()->maintenance.prepareFanqieSamples());
+  assertEquals(2,count("SELECT count(*) FROM books"));assertEquals(9,count("SELECT count(*) FROM book_copies"));assertEquals(1,count("SELECT count(*) FROM loans"));
+ }
+ @Test void samplePreparationKeepsArchivedSourcesWithoutCreatingCopies() {
+  catalogImports.importDocument(new CatalogImportService.Document("fanqie",List.of(importedBook("7000000000000000021","归档来源","网络小说"))));
+  sql.update("UPDATE books SET archived_at=now() WHERE title='归档来源'",Map.of());
+  var result=maintenance.prepareFanqieSamples();assertEquals(0,result.addedCopies());assertEquals(1,result.skippedBooks());
+  var distributed=maintenance.distributeFanqieCopies();assertEquals(0,distributed.addedCopies());assertEquals(1,distributed.skippedBooks());
+ }
+ @Test void variedInventoryUsesSeveralQuantitiesAndDoesNotGrowOnRerun() {
+  var sources=List.of(importedBook("7000000000000000031","检修样本","网络小说"),importedBook("7000000000000000038","六册样本","网络小说"),importedBook("7000000000000000053","五册样本","网络小说"));
+  catalogImports.importDocument(new CatalogImportService.Document("fanqie",sources));maintenance.prepareFanqieSamples();
+  var result=maintenance.distributeFanqieCopies();assertEquals(3,result.processedBooks());assertEquals(3,result.relocatedCopies());assertTrue(result.addedCopies()>0);
+  assertEquals(1,result.maintenanceCopies());assertEquals(1,count("SELECT count(*) FROM book_copies WHERE status='unavailable' AND status_reason IS NOT NULL"));
+  assertEquals(6,count("SELECT count(*) FROM book_copies bc JOIN book_sources s ON s.book_id=bc.book_id WHERE s.external_id='7000000000000000038'"));
+  assertEquals(5,count("SELECT count(*) FROM book_copies bc JOIN book_sources s ON s.book_id=bc.book_id WHERE s.external_id='7000000000000000053'"));
+  assertEquals(8,sql.count("SELECT count(*) FROM book_copies WHERE book_id=:id AND location=''",Sql.params("id",bookId)));
+  var again=maintenance.distributeFanqieCopies();assertEquals(0,again.addedCopies());assertEquals(0,again.relocatedCopies());assertEquals(result.totalCopies(),again.totalCopies());
+ }
+ @Test void inventoryDistributionPreservesCirculationAndRetiredCopies() {
+  catalogImports.importDocument(new CatalogImportService.Document("fanqie",List.of(importedBook("7000000000000000038","历史样本","网络小说"))));maintenance.prepareFanqieSamples();
+  UUID sourceBook=id(sql.one("SELECT book_id AS id FROM book_sources WHERE external_id='7000000000000000038'",Map.of()));
+  UUID oldCopy=id(sql.one("SELECT id FROM book_copies WHERE book_id=:id",Sql.params("id",sourceBook)));
+  UUID loan=id(borrow(readerId,oldCopy));circulation.giveBack(UUID.randomUUID(),loan,new CirculationController.Return(false,""));
+  var result=maintenance.distributeFanqieCopies();assertEquals(5,result.addedCopies());assertEquals(0,result.relocatedCopies());
+  assertEquals("学习库 / 番茄小说",sql.one("SELECT location FROM book_copies WHERE id=:id",Sql.params("id",oldCopy)).get("location"));
+  UUID withdrawn=id(sql.one("SELECT id FROM book_copies WHERE book_id=:id AND id<>:old AND status='available' LIMIT 1",Sql.params("id",sourceBook,"old",oldCopy)));
+  catalog.copyState(withdrawn,new CatalogController.CopyState("retired","练习退出流通","手工位置","手工备注"));
+  assertEquals(0,maintenance.distributeFanqieCopies().addedCopies());
+  assertEquals("retired",sql.one("SELECT status FROM book_copies WHERE id=:id",Sql.params("id",withdrawn)).get("status"));
+  assertEquals(1,count("SELECT count(*) FROM loans WHERE returned_at IS NOT NULL"));
+ }
+ @Test void inventoryDistributionRollsBackRelocationAndCopiesTogether() {
+  catalogImports.importDocument(new CatalogImportService.Document("fanqie",List.of(importedBook("7000000000000000038","回滚样本","网络小说"))));maintenance.prepareFanqieSamples();
+  sql.update("CREATE FUNCTION test_inventory_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.note LIKE '%馆藏分布 v1%' THEN RAISE EXCEPTION 'test failure'; END IF; RETURN NEW; END $$",Map.of());
+  sql.update("CREATE TRIGGER test_inventory_fail BEFORE INSERT ON book_copies FOR EACH ROW EXECUTE FUNCTION test_inventory_fail()",Map.of());
+  try {
+   assertThrows(org.springframework.dao.DataAccessException.class,()->maintenance.distributeFanqieCopies());
+   assertEquals(9,count("SELECT count(*) FROM book_copies"));assertEquals(1,count("SELECT count(*) FROM book_copies WHERE location='学习库 / 番茄小说'"));
+  } finally {sql.update("DROP TRIGGER test_inventory_fail ON book_copies",Map.of());sql.update("DROP FUNCTION test_inventory_fail()",Map.of());}
+ }
+ BookCoverService.Cover coverFixture(String external) throws Exception {
+  var buffer=new java.io.ByteArrayOutputStream();javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2,3,java.awt.image.BufferedImage.TYPE_INT_RGB),"png",buffer);
+  byte[] bytes=buffer.toByteArray();String filename=external+".png";java.nio.file.Files.write(COVER_DIR.resolve(filename),bytes);
+  return new BookCoverService.Cover(external,filename,HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)),bytes.length,"novel-pic/ai/testimage","2026-10-12T00:00:00Z");
+ }
+ @Test void coversServeLocalImagesWithAuthenticationAndArchivePermissions() throws Exception {
+  String external="7000000000000000022";
+  catalogImports.importDocument(new CatalogImportService.Document("fanqie",List.of(importedBook(external,"封面来源","网络小说"))));
+  var cover=coverFixture(external);var manifest=new BookCoverService.Document("fanqie",List.of(cover),List.of());
+  assertEquals(1,coverService.importCovers(manifest));assertEquals(0,coverService.importCovers(manifest));
+  UUID id=id(sql.one("SELECT book_id AS id FROM book_sources WHERE external_id=:id",Sql.params("id",external)));
+  assertTrue(catalog.book(id).get("coverUrl").toString().contains("/books/"+id+"/cover?v="));
+  var browser=browser();assertEquals(401,request(browser,"/books/"+id+"/cover","GET",null,false).statusCode());
+  assertEquals(200,request(browser,"/auth/login","POST",Map.of("username","test_reader","password",password),true).statusCode());
+  String url="http://127.0.0.1:"+environment.getProperty("local.server.port")+"/api/v1/books/"+id+"/cover";
+  var response=browser.send(HttpRequest.newBuilder(URI.create(url)).GET().build(),HttpResponse.BodyHandlers.ofByteArray());
+  assertEquals(200,response.statusCode());assertEquals("image/png",response.headers().firstValue("Content-Type").orElse(""));
+  assertTrue(response.headers().firstValue("Cache-Control").orElse("").contains("private"));
+  assertArrayEquals(java.nio.file.Files.readAllBytes(COVER_DIR.resolve(cover.filename())),response.body());
+  catalog.archive(id,true);assertEquals(404,request(browser,"/books/"+id+"/cover","GET",null,false).statusCode());
+ }
+ @Test void coverImportRejectsPathsAndCorruptionAndRollsBackMissingSources() throws Exception {
+  String external="7000000000000000023";
+  catalogImports.importDocument(new CatalogImportService.Document("fanqie",List.of(importedBook(external,"验证来源","网络小说"))));
+  var good=coverFixture(external);var bad=new BookCoverService.Cover(external,"../../private.png",good.sha256(),good.size(),good.coverUri(),good.fetchedAt());
+  assertThrows(IllegalArgumentException.class,()->coverService.importCovers(new BookCoverService.Document("fanqie",List.of(bad),List.of())));
+  var corrupt=new BookCoverService.Cover(external,good.filename(),"0".repeat(64),good.size(),good.coverUri(),good.fetchedAt());
+  assertThrows(IllegalArgumentException.class,()->coverService.importCovers(new BookCoverService.Document("fanqie",List.of(corrupt),List.of())));
+  var missing=coverFixture("7000000000000000024");
+  assertThrows(BusinessException.class,()->coverService.importCovers(new BookCoverService.Document("fanqie",List.of(good,missing),List.of())));
+  assertEquals(0,count("SELECT count(*) FROM books WHERE cover_file IS NOT NULL"));
+ }
+ CatalogImportService.Book importedBook(String external, String title, String category) {
+  return new CatalogImportService.Book(external,title,"作者' SQL",category,"公开书目信息概览","https://fanqienovel.com/page/"+external,"2026-10-12T00:00:00Z",List.of("玄幻"),"连载中");
+ }
+ @Test void catalogueImportDeduplicatesWithoutInventoryAndPreservesEdits() {
+  var book=importedBook("7000000000000000001","标题'; DROP TABLE users; --","网络小说");
+  var document=new CatalogImportService.Document("fanqie",List.of(book));
+  var first=catalogImports.importDocument(document);
+  assertEquals(1,first.inserted());assertEquals(0,first.skipped());
+  var row=sql.one("SELECT b.id,b.title,b.isbn,b.publisher,b.publication_year FROM books b JOIN book_sources s ON s.book_id=b.id WHERE s.external_id=:external",Sql.params("external",book.externalId()));
+  assertEquals(book.title(),row.get("title"));assertNull(row.get("isbn"));assertNull(row.get("publisher"));assertNull(row.get("publication_year"));
+  UUID importedId=id(row);
+  assertEquals(0,sql.count("SELECT count(*) FROM book_copies WHERE book_id=:book",Sql.params("book",importedId)));
+  sql.update("UPDATE books SET title='人工编辑' WHERE id=:id",Sql.params("id",importedId));
+  var repeated=catalogImports.importDocument(document);
+  assertEquals(0,repeated.inserted());assertEquals(1,repeated.skipped());
+  assertEquals("人工编辑",sql.one("SELECT title FROM books WHERE id=:id",Sql.params("id",importedId)).get("title"));
+  assertEquals(3,count("SELECT count(*) FROM users"));
+ }
+ @Test void catalogueImportRejectsInvalidBatchBeforeWriting() {
+  long books=count("SELECT count(*) FROM books"),batches=count("SELECT count(*) FROM catalog_import_batches");
+  var good=importedBook("7000000000000000002","有效标题","网络小说");
+  var bad=importedBook("7000000000000000003","\ue437乱码","网络小说");
+  assertThrows(IllegalArgumentException.class,()->catalogImports.importDocument(new CatalogImportService.Document("fanqie",List.of(good,bad))));
+  assertThrows(IllegalArgumentException.class,()->catalogImports.importDocument(new CatalogImportService.Document("fanqie",List.of(good,good))));
+  assertEquals(books,count("SELECT count(*) FROM books"));assertEquals(batches,count("SELECT count(*) FROM catalog_import_batches"));
+ }
+ @Test void catalogueImportRollsBackEntireBatchOnDatabaseFailure() {
+  long books=count("SELECT count(*) FROM books"),batches=count("SELECT count(*) FROM catalog_import_batches"),categories=count("SELECT count(*) FROM categories");
+  sql.update("CREATE FUNCTION test_reject_import() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.external_id='7000000000000000005' THEN RAISE EXCEPTION 'test failure'; END IF; RETURN NEW; END $$",Map.of());
+  sql.update("CREATE TRIGGER test_reject_import BEFORE INSERT ON book_sources FOR EACH ROW EXECUTE FUNCTION test_reject_import()",Map.of());
+  try {
+   var first=importedBook("7000000000000000004","第一本","导入事务测试");
+   var second=importedBook("7000000000000000005","第二本","导入事务测试");
+   assertThrows(org.springframework.dao.DataAccessException.class,()->catalogImports.importDocument(new CatalogImportService.Document("fanqie",List.of(first,second))));
+   assertEquals(books,count("SELECT count(*) FROM books"));assertEquals(batches,count("SELECT count(*) FROM catalog_import_batches"));
+   assertEquals(categories,count("SELECT count(*) FROM categories"));assertEquals(0,count("SELECT count(*) FROM book_sources"));
+  } finally {
+   sql.update("DROP TRIGGER test_reject_import ON book_sources",Map.of());sql.update("DROP FUNCTION test_reject_import()",Map.of());
+  }
+ }
+ @Test void concurrentCatalogueImportsCreateOneSourceAndOneBook() throws Exception {
+  var document=new CatalogImportService.Document("fanqie",List.of(importedBook("7000000000000000006","并发导入","网络小说")));
+  try(var workers=Executors.newFixedThreadPool(2)) {
+   var start=new CountDownLatch(1);
+   var first=workers.submit(()->{start.await();return catalogImports.importDocument(document);});
+   var second=workers.submit(()->{start.await();return catalogImports.importDocument(document);});start.countDown();
+   var a=first.get(10,TimeUnit.SECONDS);var b=second.get(10,TimeUnit.SECONDS);
+   assertEquals(1,a.inserted()+b.inserted());assertEquals(1,a.skipped()+b.skipped());
+   assertEquals(1,count("SELECT count(*) FROM book_sources"));assertEquals(2,count("SELECT count(*) FROM books"));
+  }
+ }
  @Test void borrowReturnAndDamageKeepInventoryConsistent() {
   UUID loan=id(borrow(readerId,copies.getFirst()));
   assertEquals("borrowed",sql.one("SELECT status FROM book_copies WHERE id=:id",Sql.params("id",copies.getFirst())).get("status"));

@@ -12,6 +12,7 @@ public class CatalogService {
     static final String BOOK_COLUMNS="""
       b.id,b.title,b.author,b.publisher,b.isbn,b.publication_year AS "publicationYear",b.edition,b.description,
       b.category_id AS "categoryId",c.name AS category,b.archived_at AS "archivedAt",
+      CASE WHEN b.cover_file IS NOT NULL THEN '/api/v1/books/' || b.id || '/cover?v=' || extract(epoch FROM b.cover_fetched_at)::bigint ELSE NULL END AS "coverUrl",
       (SELECT count(*) FROM book_copies x WHERE x.book_id=b.id AND x.status<>'retired') AS "totalCopies",
       (SELECT count(*) FROM book_copies x WHERE x.book_id=b.id AND x.status='available') AS "availableCopies"
       """;

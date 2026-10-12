@@ -19,7 +19,13 @@
     "db:stop": "bash scripts/local-db.sh stop",
     "admin:create": "bash scripts/create-admin.sh",
     "db:seed": "bash scripts/seed.sh",
-    "db:migrate": "bash scripts/migrate.sh"
+    "db:migrate": "bash scripts/migrate.sh",
+    "catalog:crawl": "python3 scripts/crawl-fanqie.py --limit 1000",
+    "catalog:import": "bash scripts/import-catalog.sh",
+    "catalog:covers": "bash scripts/crawl-covers.sh",
+    "catalog:prepare": "bash scripts/maintain-catalog.sh prepare",
+    "catalog:covers:import": "bash scripts/maintain-catalog.sh covers",
+    "catalog:copies:distribute": "bash scripts/maintain-catalog.sh distribute"
   },
   "devDependencies": {
     "concurrently": "9.2.5"
