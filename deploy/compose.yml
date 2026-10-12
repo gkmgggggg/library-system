@@ -1,0 +1,51 @@
+name: library-system
+services:
+  postgres:
+    image: postgres:16.15
+    environment:
+      POSTGRES_USER: library_owner
+      POSTGRES_DB: library_dev
+      POSTGRES_PASSWORD_FILE: /run/secrets/owner_db_password
+    volumes:
+      - library_db:/var/lib/postgresql/data
+      - ./init-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+    secrets: [owner_db_password, app_db_password]
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U library_owner -d library_dev"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DATABASE_URL: jdbc:postgresql://postgres:5432/library_dev
+      DATABASE_USER: library_app
+      APP_ORIGIN: ${APP_ORIGIN:?Set HTTPS application origin}
+      API_PORT: 3001
+    ports: ["127.0.0.1:${LIBRARY_API_PORT:-3001}:3001"]
+    secrets: [app_db_password]
+    networks: [database]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:3001/api/v1/health/ready]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+networks:
+  database:
+    internal: true
+volumes:
+  library_db:
+secrets:
+  owner_db_password:
+    file: ${LIBRARY_OWNER_PASSWORD_FILE:?Set private owner password file outside checkout}
+  app_db_password:
+    file: ${LIBRARY_APP_PASSWORD_FILE:?Set private app password file outside checkout}

@@ -1,0 +1,9 @@
+FROM eclipse-temurin:21-jre-alpine
+RUN apk add --no-cache curl && addgroup -S app && adduser -S -G app app
+WORKDIR /app
+COPY apps/api/target/library-api-0.0.1-SNAPSHOT.jar app.jar
+COPY deploy/api-entrypoint.sh entrypoint.sh
+RUN chmod 755 entrypoint.sh
+USER app
+EXPOSE 3001
+ENTRYPOINT ["/app/entrypoint.sh"]

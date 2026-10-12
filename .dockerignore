@@ -1,0 +1,9 @@
+.git
+node_modules
+**/node_modules
+apps/web/dist
+apps/api/src
+apps/api/target/*.jar.original
+.env*
+output
+.playwright-cli

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+target/
+.env
+.env.*
+!.env.example
+.local/
+output/
+.playwright-cli/
+*.tsbuildinfo
+*.log
+.DS_Store
